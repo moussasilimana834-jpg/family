@@ -8,6 +8,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart'; // Import for storage
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart'; // Import for image_picker
+import 'package:family/barres/Profile.dart';
 
 class AccueilPage extends StatefulWidget {
   const AccueilPage({Key? key}) : super(key: key);
@@ -21,7 +22,7 @@ class _AccueilPageState extends State<AccueilPage> {
   final _auth = FirebaseAuth.instance;
   final _storage = FirebaseStorage.instance; // Storage instance
 
-  List<String> _memberships = []; // local state for user's memberships
+
   StreamSubscription? _userSubscription;
   Map<String, dynamic>? _currentUserData; // Local state for current user data
 
@@ -45,7 +46,6 @@ class _AccueilPageState extends State<AccueilPage> {
       if (mounted && snap.exists) {
         final data = snap.data()!;
         setState(() {
-          _memberships = List<String>.from(data['memberships'] ?? []);
           _currentUserData = data; // Store current user data
         });
       }
@@ -130,32 +130,7 @@ class _AccueilPageState extends State<AccueilPage> {
   }
 
   // 🔹 S’abonner
-  void _toggleMemberships(String otherUserId) {
-    final currentUserId = _auth.currentUser!.uid;
-    if (currentUserId == otherUserId) return;
 
-    final currentUserRef = _firestore.collection('users').doc(currentUserId);
-    final otherUserRef = _firestore.collection('users').doc(otherUserId);
-
-    final isCurrentlyMember = _memberships.contains(otherUserId);
-
-    // Firestore update
-    if (isCurrentlyMember) {
-      currentUserRef.update({'memberships': FieldValue.arrayRemove([otherUserId])});
-      otherUserRef.update({'members': FieldValue.arrayRemove([currentUserId])});
-          ScaffoldMessenger.of(context).showSnackBar(
-         const  SnackBar(content: Text("Vous n\'êtes plus membre de cette Communauté"),
-         backgroundColor: Colors.green),
-
-      );
-    } else {
-      currentUserRef.update({'memberships': FieldValue.arrayUnion([otherUserId])});
-      otherUserRef.update({'members': FieldValue.arrayUnion([currentUserId])});
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Vous êtes mainteant membre de cette communauté"))
-      );
-    }
-  }
 
   // 🔹 Affiche les commentaires dans un modal
   void _showComments(BuildContext context, String postId) {
@@ -412,39 +387,48 @@ class _AccueilPageState extends State<AccueilPage> {
                     final post = posts[i];
                     final data = post.data() as Map<String, dynamic>;
 
+                   // recuperation de l'Id de l'auteur
+                    final postAuthorId = data['uid'] as String ;
+
                     final currentUserId = _auth.currentUser!.uid;
                     final List likes = List.from(data['likes'] ?? []);
                     final isLiked = likes.contains(currentUserId);
                     final commentsCount = data['commentsCount'] ?? 0;
-                    final postAuthorId = data['authorId'] ?? data['uid'];
 
-                    if(postAuthorId == null || postAuthorId.toString().trim().isEmpty) {
+
+                    // si l'Id est manquant , on affiche une tuile vide pour éviter une erreur
+                    if(postAuthorId == false || postAuthorId.toString().trim().isEmpty) {
                       return const SizedBox.shrink();
                     }
 
 
-                    return FutureBuilder<Map<String, dynamic>?>(
-                      future: _getUserData(postAuthorId),
-                      builder: (context, userSnap) {
-                        if(userSnap.connectionState == ConnectionState.waiting){
-                          return Card(
-                            margin:const EdgeInsets.symmetric(vertical: 15, horizontal: 12),
-                            child: Container(
-                              height:200,
-                              alignment: Alignment.center,
-                              child: const CircularProgressIndicator(),
-
-                            ),
+                    return StreamBuilder<DocumentSnapshot>(
+                      stream: _firestore.collection('users').doc(postAuthorId).snapshots(),
+                      builder: (context, userSnapshot) {
+                        if(userSnapshot.connectionState == ConnectionState.waiting){
+                          return const ListTile (
+                        title: Text("Chargement..."),
+                            leading: CircleAvatar(),
                           );
                         }
-
-                        if (!userSnap.hasData || userSnap.data == null) {
+                        if (!userSnapshot.hasData || userSnapshot.data?.data() == null) {
+                          // Gère le cas où l'utilisateur a été supprimé
                           return const SizedBox.shrink();
                         }
 
-                        final user = userSnap.data!;
+                        final user = userSnapshot.data!.data() as Map<String, dynamic>;
                         final userName = user['name'] ?? 'Utilisateur';
                         final userPhoto = user['photoUrl'];
+
+                        void navigationToProfile(){
+                          Navigator.push(context,
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                // on passe l'id de lauteur à la profilePage
+                                    ProfilePage(userId: postAuthorId),
+                              )
+                          );
+                        }
 
                         return Card(
                           margin: const EdgeInsets.symmetric(
@@ -456,33 +440,19 @@ class _AccueilPageState extends State<AccueilPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               // Post Header
-                            ListTile(
-                              leading: CircleAvatar(
-                                backgroundImage: userPhoto != null
-                                    ? NetworkImage(userPhoto)
-                                    :const AssetImage('assets/default_avatar.png') as ImageProvider
-                              ),
-                              title: Text(
-                                userName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                trailing:PopupMenuButton<String>(
-                                onSelected:(value){
-                                  if(value == 'toggle_member'){
-                                    _toggleMemberships(postAuthorId);
-                        }
-                                  },
-                        itemBuilder:(BuildContext context ){
-                                  final bool isMember = _memberships.contains(postAuthorId);
-                                  return [
-                                    PopupMenuItem<String>(
-                           value:'toggle_member',
-                           child:Text(isMember ? 'Quitter la communauté' : 'Dévenir member')
-                                  ),
-                        // autres options du menu 
-                            ];
-                        },
-                        icon: const Icon(Icons.more_vert)
-                                )
+                              ListTile(
+                                onTap: navigationToProfile,
+                                leading: CircleAvatar(
+                                  backgroundImage: userPhoto != null
+                                      ? NetworkImage(userPhoto)
+                                      : const AssetImage('assets/default_avatar.png') as ImageProvider,
                                 ),
+                                title: Text(
+                                  userName,
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                ),
+
+                              ),
                                    // Description (Text du post)
                               if(data['text'] != null && data['text'].toString().isNotEmpty)
                              Padding(
@@ -509,6 +479,7 @@ class _AccueilPageState extends State<AccueilPage> {
                                      size: 60, color:Colors.white))
                                      :null,
                                 ),
+
                               // Action Buttons
                               Padding(
                                 padding:
@@ -544,7 +515,7 @@ class _AccueilPageState extends State<AccueilPage> {
                                 ),
                               ),
                             ],
-                          ),
+                        )
                         );
                       },
                     );

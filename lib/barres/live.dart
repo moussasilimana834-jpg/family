@@ -85,7 +85,7 @@ class LivePage extends StatelessWidget {
                 context,
                 MaterialPageRoute(
                   builder: (_) => LiveStreamPage(
-                    channelName: channelName,
+                    liveId: channelName,
                     isBroadcaster: false,
                   ),
                 ),
@@ -237,7 +237,8 @@ class LivePage extends StatelessWidget {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => LiveStreamPage(channelName: channelName, isBroadcaster: true),
+        builder: (_) => LiveStreamPage(
+            liveId: channelName, isBroadcaster: true),
       ),
     );
   }

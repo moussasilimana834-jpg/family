@@ -28,5 +28,10 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	    <key>NSCameraUsageDescription</key>
+        <string>Nous avons besoin de l'accès à la caméra pour démarrer votre diffusion en direct.</string>
+        <key>NSMicrophoneUsageDescription</key>
+        <string>Nous avons besoin de l'accès au microphone pour que les autres puissent vous entendre.</string>
+
 </dict>
 </plist>

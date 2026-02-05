@@ -13,14 +13,15 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import'package:cloud_firestore/cloud_firestore.dart';
 
-class MoiPage extends StatefulWidget {
-  const MoiPage({super.key});
+class ProfilePage extends StatefulWidget {
+  final String userId;
+  const ProfilePage({super.key, required this.userId});
 
   @override
-  State<MoiPage> createState() => _MoiPageState();
+  State<ProfilePage> createState() => _ProfilePageState();
 }
 
-class _MoiPageState extends State<MoiPage> {
+class _ProfilePageState extends State<ProfilePage> {
   final authService = AuthService();
   final _firestore = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
@@ -36,6 +37,7 @@ class _MoiPageState extends State<MoiPage> {
   Future<void> _changeProfileImage() async{
     final user = _auth.currentUser;
     if(user==null) return ;
+    if(user.uid != widget.userId) return ;  // on ne peut changer que sa photos de profil
     final picker = ImagePicker();
     final XFile? image = await picker.pickImage(source: ImageSource.gallery);
     if(image==null)return ;
@@ -67,7 +69,7 @@ class _MoiPageState extends State<MoiPage> {
       );
     }catch(e){
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Une erreur s'est produit lors du chargement "),
+          const SnackBar(content: Text("Une erreur s'est produit lors du chargement "),
             backgroundColor: Colors.red,
           )
       );
@@ -84,6 +86,7 @@ class _MoiPageState extends State<MoiPage> {
   Future<void> _updateBio(String newBio) async {
     final user = _auth.currentUser;
     if (user == null) return;
+    if(user.uid != widget.userId) return ;  //securisé
 
     await _firestore.collection('users').doc(user.uid).update({
       'bio': newBio,
@@ -93,22 +96,103 @@ class _MoiPageState extends State<MoiPage> {
       const SnackBar(content: Text('✅ Bio mise à jour')),
     );
   }
+  // ajoute de la fonctionnalité devenir membre
+// Assurez-vous d'avoir une référence à Firestore et à l'ID de l'utilisateur connecté
+
+  final String? currentUserId = FirebaseAuth.instance.currentUser?.uid;
+// Fonction pour ajouter/retirer un membre
+  Future<void> _toggleMemberships(String profileId, List<String> currentMemberships) async {
+    if (currentUserId == null) return; // Sécurité pour s'assurer que l'utilisateur est connecté
+
+    final profileRef = _firestore.collection('users').doc(profileId);
+    final currentUserRef = _firestore.collection('users').doc(currentUserId);
+
+    final bool isMember = currentMemberships.contains(profileId);
+
+    try {
+      if (isMember) {
+        // L'utilisateur veut se désabonner
+        // 1. On retire le profilId de la liste 'memberships' de l'utilisateur courant
+        await currentUserRef.update({
+          'memberships': FieldValue.arrayRemove([profileId])
+        });
+        // 2. On retire le currentUserId de la liste 'members' du profil visité
+        await profileRef.update({
+          'members': FieldValue.arrayRemove([currentUserId])
+        });
+      } else {
+        // L'utilisateur veut devenir membre
+        // 1. On ajoute le profilId à la liste 'memberships' de l'utilisateur courant
+        await currentUserRef.update({
+          'memberships': FieldValue.arrayUnion([profileId])
+        });
+        // 2. On ajoute le currentUserId à la liste 'members' du profil visité
+        await profileRef.update({
+          'members': FieldValue.arrayUnion([currentUserId])
+        });
+      }
+    } catch (e) {
+      // Affichez un message d'erreur si la mise à jour échoue
+      if (mounted) { // Assurez-vous que le widget est toujours dans l'arbre visuel
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Une erreur est survenue : $e')),
+        );
+      }
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
     final user = _auth.currentUser;
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+
+    // verifie si l'utilisateur est bien connecté
     if (user == null) {
       return const Scaffold(
         body: Center(child: Text('Aucun utilisateur connecté')),
       );
     }
 
+  // on utilise un streamBuilder pour ecouter les changements sur notre propre utilisateur
+    // afi de savoir si on est deja membre ou non
+    return StreamBuilder<DocumentSnapshot>(
+      stream: _firestore.collection('users').doc(currentUserId).snapshots(),
+      builder: (context, currentUserSnapshot){
+        if(!currentUserSnapshot.hasData){
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        final currentUserData = currentUserSnapshot.data!.data() as Map<String, dynamic>;
+     //   on recupère la liste des membres de la communauté
+        final currentMemberships = List<String>.from(currentUserData['memberships'] ?? []);
+
+// on  recupère les données de l'utilisateur à afficher
+       return StreamBuilder<DocumentSnapshot>(
+         stream: FirebaseFirestore.instance.collection('users').doc(widget.userId).snapshots(),
+         builder: (context, profileUserSnapshot){
+           if(profileUserSnapshot.connectionState == ConnectionState.waiting){
+             return const Scaffold(body: Center(child: CircularProgressIndicator()));
+           }
+           if(!profileUserSnapshot.hasData || profileUserSnapshot.data?.data() == null){
+             return const Scaffold(body: Center(child: Text("Aucun utilisateur trouvé")));
+           }
+           final profileUserData =
+               profileUserSnapshot.data!.data() as Map<String , dynamic>? ??{};
+           final profileName = profileUserData['name'] ?? 'Utilisateur ';
+           final photoUrl = profileUserData['photoUrl'];
+           _bioController.text = profileUserData['bio'] ?? 'Présente-toi ici 🌟';
+
+           final membersCount = (profileUserData['members'] as List? ?? []).length;
+           final groupsCount = (profileUserData['memberships'] as List? ?? []).length;
+           final isOwnProfile = widget.userId == currentUserId;
+
+
     return Scaffold(
       appBar: AppBar(
         centerTitle: true,
-        title: const Text("Mon Profil",
-            style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
-        actions: [
+        title:  Text(isOwnProfile ? "Mon Profil": 'profil de $profileName',
+            style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
+        actions: isOwnProfile ? [
           IconButton(
             icon: const Icon(Icons.edit, color: Colors.blueAccent),
             onPressed: () => Navigator.push(
@@ -120,11 +204,20 @@ class _MoiPageState extends State<MoiPage> {
             icon: const Icon(Icons.more_vert,),
             onSelected: (value) {
               if (value == 'planning') {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const CreerPlanningPage()));
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const CreerPlanningPage()));
               } else if (value == 'sondage') {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const CreerSondagePage()));
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const CreerSondagePage()));
               } else if (value == 'reunion') {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const CreerReunionPage()));
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const CreerReunionPage()));
               }
             },
             itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
@@ -143,43 +236,29 @@ class _MoiPageState extends State<MoiPage> {
               const PopupMenuItem<String>(
                 value: 'reunion',
                 child: Row(
-                  children: [Icon(Icons.group, color: Colors.orange), SizedBox(width: 10), Text('Réunion')],
+                  children: [Icon(Icons.group, color: Colors.orange), SizedBox(width: 10), Text('Réunion')
+                  ],
                 ),
               ),
             ],
           ),
-
-        ],
+        ] : [],
       ),
-      body: StreamBuilder<DocumentSnapshot>(
-        stream: _firestore.collection('users').doc(user.uid).snapshots(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final data = snapshot.data!.data() as Map<String, dynamic>? ?? {};
-          final name = data['name'] ?? user.displayName ?? 'Utilisateur';
-          final photoUrl = data['photoUrl'] ?? user.photoURL;
-          _bioController.text = data['bio'] ?? 'Présente-toi ici 🌟';
-          final followers = (data['followers'] ?? []).length;
-          final following = (data['following'] ?? []).length;
-
-          return SingleChildScrollView(
+      body:  SingleChildScrollView(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
               child: Column(
                 children: [
-                  // ---------- 🧍 Profil ----------
                   Center(
                     child: Column(
                       children: [
                         GestureDetector(
-                          onTap: _isUploading ? null :_changeProfileImage,
+                          onTap: isOwnProfile ? _changeProfileImage : null,
                           child: Stack(
                             children: [
-                              _isUploading
-                              ?const CircleAvatar(radius: 56,
+                              _isUploading && isOwnProfile
+                              ?const CircleAvatar(
+                                  radius: 56,
                                 child: CircularProgressIndicator())
                               :CircleAvatar(
                                 radius: 56,
@@ -193,7 +272,7 @@ class _MoiPageState extends State<MoiPage> {
                         ),
                         const SizedBox(height: 12),
                         Text(
-                          name,
+                          profileName,
                           style: const TextStyle(
                               fontSize: 22, fontWeight: FontWeight.bold),
                         ),
@@ -211,7 +290,7 @@ class _MoiPageState extends State<MoiPage> {
                       StreamBuilder<QuerySnapshot>(
                         stream:_firestore
                             .collection("publications")
-                            .where('uid', isEqualTo: user.uid)
+                            .where('uid', isEqualTo: widget.userId)
                             .snapshots(),
                         builder: (context , snap){
                           String count= "0";
@@ -221,32 +300,50 @@ class _MoiPageState extends State<MoiPage> {
                           return _statBlock('publications', count);
                         }
                       ),
-                      _statBlock("Membres", "$followers"),
-                      _statBlock("Groupes", "$following"),
+                      _statBlock("Membres", "$membersCount"),
+                      _statBlock("Groupes", "$groupsCount"),
                      ]
                   ),
 
                   const SizedBox(height: 25),
 
-                  // ---------- 📝 Bio ----------
-                  TextFormField(
-                    controller: _bioController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      hintText: "Présente-toi ici 🌟",
-                      filled: true,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-
-                      ),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.save, color: Colors.blueAccent),
-                        onPressed: () => _updateBio(_bioController.text),
-                      )
+                  // Affiche  soit le bouton de devenir membre , soit le champ de bio modifiable
+        if (!isOwnProfile && currentUserId != null)
+           Padding(
+             padding: const EdgeInsets.symmetric(horizontal: 40.0),
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                // utilise la variable currentmemberships pour determiner si on est deja membre
+                backgroundColor: currentMemberships.contains(widget.userId)
+                    ? Colors.grey[800]
+                    :Colors.orange,
+                minimumSize: const Size(double.infinity, 45),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+               onPressed: () => _toggleMemberships(widget.userId, currentMemberships),
+              child: Text(currentMemberships.contains(widget.userId)
+                  ?"Ne plus être membre"
+                  :"Devenir membre",
+                style: const TextStyle(color:Colors.white, fontSize: 16),
+              ),
+            ),
+           )
+                  else if(isOwnProfile)
+                    // si c'est notre propre profil , on affiche le champ de bio modifiable
+                    Padding(padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                        child:TextFormField(
+                          controller: _bioController,
+                          maxLines: 3,
+                          decoration: const InputDecoration(
+                            labelText: "Votre Bio",
+                            border: OutlineInputBorder()
+                          ),
+                          onFieldSubmitted: (newBio) => _updateBio(newBio),
+                        )
                     ),
-                  ),
-
+                    //
                   const SizedBox(height: 25),
 
                   // ---------- 📰 Publications de l’utilisateur ----------
@@ -295,7 +392,7 @@ class _MoiPageState extends State<MoiPage> {
                           //récuperation sécurisé des données
 
                           final imageUrl = post['imageUrl'] as String?;
-                          final textContent = post['text'] as String ? ;
+                          final textContent = post['text'] as String?;
                           final mediaType = post['mediaType'] as  String?;
 
                           return GestureDetector(
@@ -320,11 +417,11 @@ class _MoiPageState extends State<MoiPage> {
                                                 children: [
                                                   Image.network(imageUrl,
                                                     fit:BoxFit.cover,
-                                                    errorBuilder: (context, error, StackTrace) =>
+                                                    errorBuilder: (context, error, stackTrace) =>
                                                     const Icon(Icons.broken_image, size: 100),
                                                   ),
                                                   if(mediaType == 'video')
-                                                    Icon(Icons.play_circle_fill_outlined,
+                                                    const Icon(Icons.play_circle_fill_outlined,
                                                         color:Colors.white, size: 60,
                                                     )
                                                 ],
@@ -332,8 +429,7 @@ class _MoiPageState extends State<MoiPage> {
                                             if(textContent != null && textContent.isNotEmpty)
                                               Padding(
                                                   padding: const EdgeInsets.all(16.0),
-                                                child: Text(textContent, style: TextStyle(fontSize: 16),
-                                                ),
+                                                child: Text(textContent, style: const TextStyle(fontSize: 16)),
                                               )
                                           ],
                                         ),
@@ -347,31 +443,31 @@ class _MoiPageState extends State<MoiPage> {
                               child: Stack(
                                 fit: StackFit.expand,
                                 children: [
-                                  if(imageUrl != null && imageUrl.isNotEmpty)
-                                    Image.network(imageUrl,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (context, error , stackTrace) =>
-                                      const Icon(Icons.broken_image, color: Colors.grey),
-                                      )
-                                      // pas d'image , on affiche le texte
-                                      else if( textContent != null && textContent.isNotEmpty)
-                                        Padding(
-                                            padding:const EdgeInsets.all(4.0),
-                                          child: Center(
-                                            child: Text(textContent,
-                                              maxLines: 5,
-                                              overflow: TextOverflow.ellipsis,
-                                              textAlign: TextAlign.center,
-                                              style: TextStyle(fontSize: 20),
-                                            ),
-                                          ),
+                                  if (imageUrl != null && imageUrl.isNotEmpty)
+                                    Image.network(
+                                      imageUrl,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (context, error, stackTrace) =>
+                                          const Icon(Icons.broken_image, color: Colors.grey),
+                                    )
+                                  else if (textContent != null && textContent.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.all(4.0),
+                                      child: Center(
+                                        child: Text(
+                                          textContent,
+                                          maxLines: 5,
+                                          overflow: TextOverflow.ellipsis,
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(fontSize: 12),
                                         ),
-
-                                  if(mediaType =='video')
+                                      ),
+                                    ),
+                                  if (mediaType == 'video')
                                     const Positioned(
-                                      top:4,
-                                        right:4,
-                                        child: Icon(Icons.videocam)
+                                      top: 4,
+                                      right: 4,
+                                      child: Icon(Icons.videocam),
                                     ),
                                 ],
                               ),
@@ -384,9 +480,11 @@ class _MoiPageState extends State<MoiPage> {
                 ],
               ),
             ),
-          );
-        },
-      ),
+      )
+      );
+         },
+       );
+      },
     );
   }
 
@@ -397,7 +495,8 @@ class _MoiPageState extends State<MoiPage> {
             style: const TextStyle(
                 fontWeight: FontWeight.bold, fontSize: 18)),
         Text(label,
-            style: const TextStyle(color: Colors.grey, fontSize: 13)),
+            style: const TextStyle(color: Colors.grey, fontSize: 13)
+        ),
       ],
     );
   }

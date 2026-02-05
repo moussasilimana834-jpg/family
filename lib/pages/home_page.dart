@@ -18,22 +18,29 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-
+  final AuthService _authService = AuthService();
   int _selectedIndex = 0;
+  late final List<Widget> _pages;
+
+  @override
+  void initState() {
+    super.initState();
+
+    final userId = _authService.getCurrentUserID();
+
+    _pages = <Widget>[
+      AccueilPage(),      // 0 - Page depuis accueil.dart
+      const LivePage(),         // 1 - Page depuis live.dart
+      const ChatListPage(),     // 2 - Page pour afficher la liste des utilisateurs -> MODIFIÉ
+      ProfilePage(userId: userId!),     // 3 - Page depuis moi.dart -> CORRIGÉ
+    ];
+  }
 
   void _onItemTapped(int index) {
     setState(() {
       _selectedIndex = index;
     });
   }
-
-  // La liste des pages est maintenant corrigée pour utiliser MoiPage
-  static final List<Widget> _pages = <Widget>[
-    AccueilPage(),      // 0 - Page depuis accueil.dart
-   const  LivePage(),         // 1 - Page depuis live.dart
-    const ChatListPage(),     // 2 - Page pour afficher la liste des utilisateurs -> MODIFIÉ
-     MoiPage(),     // 3 - Page depuis moi.dart -> CORRIGÉ
-  ];
 
   @override
   Widget build(BuildContext context) {

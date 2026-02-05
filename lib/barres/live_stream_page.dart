@@ -1,14 +1,16 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:agora_rtc_engine/agora_rtc_engine.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+const String appId = '997fdd9f062a4e13a0defdbb299f799d';
 
 class LiveStreamPage extends StatefulWidget {
-  final String channelName;
+  final String liveId;
   final bool isBroadcaster;
 
   const LiveStreamPage({
     super.key,
-    required this.channelName,
+    required this.liveId,
     required this.isBroadcaster,
   });
 
@@ -17,268 +19,198 @@ class LiveStreamPage extends StatefulWidget {
 }
 
 class _LiveStreamPageState extends State<LiveStreamPage> {
-  final TextEditingController _chatController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-
-  bool _showHearts = false;
-  int _viewerCount = 0;
+  late final RtcEngine _engine;
+  int? _remoteUid;
+  bool _isjoined = false;
+  bool _isMuted = false;
+  bool _isVideoDisabled = false;
+  bool _isEngineDisposed = false;
 
   @override
   void initState() {
     super.initState();
-    _incrementViewers();
+    _initEngine();
   }
 
   @override
   void dispose() {
-    _decrementViewers();
+    _disposeEngine();
     super.dispose();
   }
 
-  // 🔹 Incrémenter les spectateurs
-  Future<void> _incrementViewers() async {
-    await FirebaseFirestore.instance
-        .collection('lives')
-        .doc(widget.channelName)
-        .update({'viewers': FieldValue.increment(1)});
+  Future<void> _disposeEngine() async {
+    if (_isEngineDisposed) return;
+    _isEngineDisposed = true;
+    await _engine.leaveChannel();
+    await _engine.release();
   }
 
-  // 🔹 Décrémenter quand on quitte
-  Future<void> _decrementViewers() async {
-    await FirebaseFirestore.instance
-        .collection('lives')
-        .doc(widget.channelName)
-        .update({'viewers': FieldValue.increment(-1)});
-  }
-
-  // 🔹 Envoi d’un message
-  Future<void> _sendMessage() async {
-    final user = FirebaseAuth.instance.currentUser;
-    final text = _chatController.text.trim();
-    if (text.isEmpty || user == null) return;
-
-    await FirebaseFirestore.instance
-        .collection('lives')
-        .doc(widget.channelName)
-        .collection('messages')
-        .add({
-      'user': user.displayName ?? user.email ?? 'Anonyme',
-      'text': text,
-      'timestamp': FieldValue.serverTimestamp(),
-    });
-
-    _chatController.clear();
-    _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent + 70,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
+  Future<void> _initEngine() async {
+    await [Permission.microphone, Permission.camera].request();
+    _engine = createAgoraRtcEngine();
+    await _engine.initialize(const RtcEngineContext(appId: appId));
+    _engine.registerEventHandler(
+      RtcEngineEventHandler(
+        onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
+          debugPrint("onjoinChannelSuccess: channel = ${connection.channelId} uid= ${connection.localUid}");
+          setState(() {
+            _isjoined = true;
+          });
+        },
+        onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
+          debugPrint("onUserJoined: uid =$remoteUid");
+          setState(() {
+            _remoteUid = remoteUid;
+          });
+        },
+        onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
+          debugPrint("onUserOffline: uid =$remoteUid");
+          setState(() {
+            _remoteUid = null;
+          });
+        },
+        onError: (err, msg) {
+          debugPrint("onError: $err, $msg");
+        },
+        onLeaveChannel: (RtcConnection connection, RtcStats stats) {
+          debugPrint("onLeaveChannel");
+          setState(() {
+            _isjoined = false;
+          });
+        },
+      ),
     );
-  }
-
-  // 🔹 Like (cœur volant + compteur)
-  void _sendLike() async {
-    setState(() => _showHearts = true);
-    Future.delayed(const Duration(seconds: 1), () => setState(() => _showHearts = false));
-
-    await FirebaseFirestore.instance
-        .collection('lives')
-        .doc(widget.channelName)
-        .update({'likes': FieldValue.increment(1)});
+    // active le module video
+    await _engine.enableVideo();
+    //definir le role (Broadcaster ou Listener)
+    ClientRoleType role = widget.isBroadcaster
+        ? ClientRoleType.clientRoleBroadcaster
+        : ClientRoleType.clientRoleAudience;
+    await _engine.setClientRole(role: role);
+    // sin on diffuseur on demarre l'apercu local
+    if (widget.isBroadcaster) {
+      await _engine.startPreview();
+    }
+    // Rejoindre le canal
+    await _engine.joinChannel(
+      token: '',
+      channelId: widget.liveId,
+      uid: 0,
+      options: ChannelMediaOptions(
+        clientRoleType: role,
+        channelProfile: ChannelProfileType.channelProfileLiveBroadcasting,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          // 🎥 Placeholder de la vidéo
-          Positioned.fill(
-            child: Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Colors.black87, Colors.black54],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) async {
+        if (didPop) return;
+        // Logique pour quitter proprement
+        await _disposeEngine();
+        if (context.mounted) Navigator.pop(context);
+      },
+      child: Scaffold(
+        body: SafeArea(
+          child: _isjoined // on affiche le contenu seulement si on a rejoint le canal
+              ? Stack(
+                  children: [
+                    // widget qui affiche les videos
+                    _buildVideoViews(),
+                    // widget qui affiche les boutons
+                    _buildControls(),
+                  ],
+                )
+              : const Center(
+                  child: CircularProgressIndicator(),
                 ),
-              ),
-              child: const Center(
-                child: Icon(Icons.videocam, color: Colors.white70, size: 100),
-              ),
-            ),
+        ),
+      ),
+    );
+  }
+
+// widget pour construire le vue video
+  Widget _buildVideoViews() {
+    //si on est le diffuseur , on affiche notre propre video
+    if (widget.isBroadcaster) {
+      return AgoraVideoView(
+          controller: VideoViewController(
+        rtcEngine: _engine,
+        canvas: const VideoCanvas(uid: 0), // uid = 0 pour la vue locale
+      ));
+    } else {
+      // si on est spectacteur , on affiche la video du diffuseur distant
+      if (_remoteUid != null) {
+        return AgoraVideoView(
+            controller: VideoViewController.remote(
+          rtcEngine: _engine,
+          canvas: VideoCanvas(uid: _remoteUid!),
+          connection: RtcConnection(channelId: widget.liveId),
+        ));
+      } else {
+        // message en attendant que le diffuseur arrive
+        return const Center(
+          child: Text(
+            "En attente du diffuseur...",
+            style: TextStyle(color: Colors.white),
           ),
+        );
+      }
+    }
+  }
 
-          // ❤️ Animation des cœurs
-          if (_showHearts)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: AnimatedOpacity(
-                  opacity: _showHearts ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 300),
-                  child: Align(
-                    alignment: Alignment.bottomRight,
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 100, right: 30),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: List.generate(5, (index) {
-                          return AnimatedPositioned(
-                            duration: Duration(milliseconds: 800 + index * 200),
-                            bottom: 0 + (index * 40),
-                            right: 0,
-                            child: const Icon(Icons.favorite, color: Colors.redAccent, size: 30),
-                          );
-                        }),
-                      ),
-                    ),
-                  ),
-                ),
+// widget pour les boutons de controle
+  Widget _buildControls() {
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24.0),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // boutoon pour couper/activer le micro
+            if (widget.isBroadcaster) ...[
+              IconButton(
+                onPressed: () {
+                  setState(() {
+                    _isMuted = !_isMuted;
+                  });
+                  _engine.muteLocalAudioStream(_isMuted);
+                },
+                icon: Icon(_isMuted ? Icons.mic_off : Icons.mic),
+                color: Colors.white,
+                iconSize: 32,
               ),
-            ),
-
-          // 🔝 Barre du haut : profil + spectateurs + quitter
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  StreamBuilder<DocumentSnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('lives')
-                        .doc(widget.channelName)
-                        .snapshots(),
-                    builder: (context, snapshot) {
-                      if (!snapshot.hasData) return const SizedBox();
-                      final data = snapshot.data!;
-                      final host = data['hostEmail'] ?? 'Inconnu';
-                      final views = data['viewers'] ?? 0;
-
-                      return Row(
-                        children: [
-                          CircleAvatar(
-                            radius: 18,
-                            backgroundColor: Colors.white12,
-                            child: const Icon(Icons.person, color: Colors.white),
-                          ),
-                          const SizedBox(width: 8),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(host, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                              Text('$views spectateurs',
-                                  style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                            ],
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                  ElevatedButton(
-                    onPressed: () => Navigator.pop(context),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.redAccent,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                    child: Text(widget.isBroadcaster ? "Arrêter" : "Quitter"),
-                  ),
-                ],
+              const SizedBox(width: 16),
+              // bouton pour couper/activer la camera
+              IconButton(
+                onPressed: () {
+                  setState(() {
+                    _isVideoDisabled = !_isVideoDisabled;
+                  });
+                  _engine.enableLocalVideo(!_isVideoDisabled);
+                },
+                icon: Icon(_isVideoDisabled ? Icons.videocam_off : Icons.videocam),
+                color: Colors.white,
+                iconSize: 32,
               ),
-            ),
-          ),
-
-          // 💬 Chat en direct
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Colors.black54, Colors.black87],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                ),
-              ),
-              padding: const EdgeInsets.all(8),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseFirestore.instance
-                        .collection('lives')
-                        .doc(widget.channelName)
-                        .collection('messages')
-                        .orderBy('timestamp')
-                        .snapshots(),
-                    builder: (context, snapshot) {
-                      if (!snapshot.hasData) return const SizedBox();
-                      final messages = snapshot.data!.docs;
-
-                      return SizedBox(
-                        height: 200,
-                        child: ListView.builder(
-                          controller: _scrollController,
-                          itemCount: messages.length,
-                          itemBuilder: (context, index) {
-                            final msg = messages[index].data() as Map<String, dynamic>;
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3.0),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Icon(Icons.person, size: 18, color: Colors.white70),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: Text(
-                                      "${msg['user'] ?? 'Anonyme'} : ${msg['text'] ?? ''}",
-                                      style: const TextStyle(color: Colors.white, fontSize: 14),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _chatController,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: InputDecoration(
-                            hintText: "Écrire un message...",
-                            hintStyle: const TextStyle(color: Colors.white54),
-                            filled: true,
-                            fillColor: Colors.white10,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(30),
-                              borderSide: BorderSide.none,
-                            ),
-                            contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                          ),
-                          onSubmitted: (_) => _sendMessage(),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        icon: const Icon(Icons.send, color: Colors.white),
-                        onPressed: _sendMessage,
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.favorite, color: Colors.redAccent, size: 28),
-                        onPressed: _sendLike,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
+              const SizedBox(width: 16),
+            ],
+            // bouton pour raccrocher
+            IconButton(
+              onPressed: () {
+                // declenche le onpopInvoked du Popscope
+                Navigator.of(context).pop();
+              },
+              icon: const Icon(Icons.call_end),
+              color: Colors.redAccent,
+              iconSize: 40,
+            )
+          ],
+        ),
       ),
     );
   }

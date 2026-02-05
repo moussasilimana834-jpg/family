@@ -13,6 +13,16 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = "27.0.12077973"
 
+    // BLOC DE CODE CORRIGÉ AVEC LA SYNTAXE KOTLIN
+    packaging {
+        jniLibs {
+            pickFirsts.add("lib/arm64-v8a/libaosl.so")
+            pickFirsts.add("lib/x86/libaosl.so")
+            pickFirsts.add("lib/armeabi-v7a/libaosl.so")
+            pickFirsts.add("lib/x86_64/libaosl.so")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11

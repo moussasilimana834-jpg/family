@@ -43,7 +43,7 @@ class LoginPage extends StatelessWidget{
               //logo
               Icon(
                 Icons.account_circle,
-                size: 90,
+                size: 95,
                 color: Theme.of(context).colorScheme.secondary,
               ),
               const SizedBox(height: 25),
